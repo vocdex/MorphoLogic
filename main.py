@@ -1,14 +1,14 @@
 import sys
-
 import numpy as np
-from PyQt5.QtCore import Qt, QTimer, pyqtSignal
+from PyQt5.QtWidgets import (
+    QApplication, QMainWindow, QWidget, QGridLayout, QPushButton,
+    QVBoxLayout, QHBoxLayout, QComboBox, QLabel, QGroupBox,
+    QTextEdit, QLineEdit
+)
+from PyQt5.QtCore import Qt, pyqtSignal, QTimer, QPropertyAnimation, QEasingCurve, QRect
 from PyQt5.QtGui import QColor
-from PyQt5.QtWidgets import (QApplication, QCheckBox, QComboBox, QGridLayout,
-                             QGroupBox, QHBoxLayout, QLabel, QLineEdit,
-                             QMainWindow, QPushButton, QSlider, QSpinBox,
-                             QTextEdit, QVBoxLayout, QWidget)
+from PyQt5.QtCore import QSize
 from scipy import ndimage
-
 
 class AnimatedPixelButton(QPushButton):
     def __init__(self, row, col, button_size=30):
@@ -16,14 +16,183 @@ class AnimatedPixelButton(QPushButton):
         self.row = row
         self.col = col
         self.state = False
+        self.is_hovered = False
+        self.click_animation_active = False
+        self.base_size = button_size
         self.setFixedSize(button_size, button_size)
+        
+        # Store original position and size
+        self.original_geometry = None
+        
+        # Setup animations
+        self.hover_animation = QPropertyAnimation(self, b"geometry")
+        self.hover_animation.setDuration(150)
+        self.hover_animation.setEasingCurve(QEasingCurve.OutCubic)
+        
+        self.click_animation = QPropertyAnimation(self, b"geometry")
+        self.click_animation.setDuration(100)
+        self.click_animation.setEasingCurve(QEasingCurve.OutCubic)
+        
+        # Connect animation finished signals
+        self.hover_animation.finished.connect(self.onAnimationFinished)
+        self.click_animation.finished.connect(self.onAnimationFinished)
+        
+        # Timer for color transition
+        self.color_timer = QTimer(self)
+        self.color_timer.timeout.connect(self.updateColorTransition)
+        self.color_timer.setInterval(16)  # 60 FPS
+        self.transition_progress = 0
+        self.start_color = QColor(255, 255, 255)
+        self.target_color = QColor(255, 255, 255)
+        
         self.updateStyle()
+        self.setMouseTracking(True)
 
-    def updateStyle(self):
-        intensity = 255 if not self.state else 0  # White for 0, Black for 1
-        color = QColor(intensity, intensity, intensity)
-        self.setStyleSheet(f"background-color: {color.name()}; border: 1px solid gray;")
+    def showEvent(self, event):
+        super().showEvent(event)
+        # Store original geometry once the widget is shown
+        if self.original_geometry is None:
+            self.original_geometry = self.geometry()
 
+    def enterEvent(self, event):
+        self.is_hovered = True
+        # Scale up animation using original position
+        if self.original_geometry is None:
+            self.original_geometry = self.geometry()
+            
+        new_size = int(self.base_size * 1.1)
+        new_geometry = QRect(self.original_geometry)
+        new_geometry.setSize(QSize(new_size, new_size))
+        new_geometry.moveCenter(self.original_geometry.center())
+        
+        self.hover_animation.setStartValue(self.geometry())
+        self.hover_animation.setEndValue(new_geometry)
+        self.hover_animation.start()
+        
+        self.startColorTransition()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self.is_hovered = False
+        # Scale down animation
+        current_geometry = self.geometry()
+        center = current_geometry.center()
+        new_geometry = QRect(0, 0, self.base_size, self.base_size)
+        new_geometry.moveCenter(center)
+        
+        self.hover_animation.setStartValue(current_geometry)
+        self.hover_animation.setEndValue(new_geometry)
+        self.hover_animation.start()
+        
+        self.startColorTransition()
+        super().leaveEvent(event)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            if self.original_geometry is None:
+                self.original_geometry = self.geometry()
+                
+            self.click_animation_active = True
+            # Stop any running animations
+            self.hover_animation.stop()
+            self.click_animation.stop()
+            
+            # Scale down animation from original position
+            new_size = int(self.base_size * 0.9)
+            new_geometry = QRect(self.original_geometry)
+            new_geometry.setSize(QSize(new_size, new_size))
+            new_geometry.moveCenter(self.original_geometry.center())
+            
+            self.click_animation.setStartValue(self.geometry())
+            self.click_animation.setEndValue(new_geometry)
+            self.click_animation.start()
+            
+            self.startColorTransition()
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            if self.original_geometry is None:
+                self.original_geometry = self.geometry()
+                
+            self.click_animation_active = False
+            # Stop any running animations
+            self.hover_animation.stop()
+            self.click_animation.stop()
+            
+            # Calculate target size based on hover state
+            target_size = int(self.base_size * (1.1 if self.is_hovered else 1.0))
+            
+            # Create target geometry based on original position
+            new_geometry = QRect(self.original_geometry)
+            new_geometry.setSize(QSize(target_size, target_size))
+            new_geometry.moveCenter(self.original_geometry.center())
+            
+            # Set up and start the animation
+            self.click_animation.setStartValue(self.geometry())
+            self.click_animation.setEndValue(new_geometry)
+            self.click_animation.start()
+            
+            self.startColorTransition()
+        super().mouseReleaseEvent(event)
+
+    def onAnimationFinished(self):
+        # If not hovered or clicked, ensure we return to original position
+        if not self.is_hovered and not self.click_animation_active:
+            if self.geometry() != self.original_geometry:
+                self.setGeometry(self.original_geometry)
+
+    def startColorTransition(self):
+        self.transition_progress = 0
+        self.start_color = self.getBackgroundColor()
+        self.target_color = self.calculateTargetColor()
+        self.color_timer.start()
+
+    def updateColorTransition(self):
+        self.transition_progress = min(1.0, self.transition_progress + 0.1)
+        current_color = self.interpolateColor(self.start_color, self.target_color, self.transition_progress)
+        self.updateStyle(current_color)
+        
+        if self.transition_progress >= 1.0:
+            self.color_timer.stop()
+
+    def interpolateColor(self, start_color, end_color, progress):
+        return QColor(
+            int(start_color.red() + (end_color.red() - start_color.red()) * progress),
+            int(start_color.green() + (end_color.green() - start_color.green()) * progress),
+            int(start_color.blue() + (end_color.blue() - start_color.blue()) * progress)
+        )
+
+    def calculateTargetColor(self):
+        base_intensity = 255 if not self.state else 0
+        
+        if self.click_animation_active:
+            return QColor(40, 60, 40) if self.state else QColor(220, 255, 220)
+        elif self.is_hovered:
+            return QColor(40, 40, 60) if self.state else QColor(220, 220, 255)
+        else:
+            return QColor(base_intensity, base_intensity, base_intensity)
+
+    def getBackgroundColor(self):
+        style = self.styleSheet()
+        if "background-color:" in style:
+            color_str = style.split("background-color:")[1].split(";")[0].strip()
+            return QColor(color_str)
+        return QColor(255, 255, 255)
+
+    def updateStyle(self, color=None):
+        if color is None:
+            color = self.calculateTargetColor()
+            
+        border_style = "2px solid #666" if self.is_hovered else "1px solid gray"
+        
+        self.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {color.name()};
+                border: {border_style};
+                border-radius: 2px;
+            }}
+        """)
 
 class EnhancedGridWidget(QWidget):
     gridChanged = pyqtSignal()
