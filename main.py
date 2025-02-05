@@ -8,7 +8,12 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt, pyqtSignal, QTimer, QPropertyAnimation, QEasingCurve, QRect
 from PyQt5.QtGui import QColor
 from PyQt5.QtCore import QSize
+from PyQt5.QtWidgets import QSpinBox
 from scipy import ndimage
+from PyQt5.QtCore import Qt, pyqtSignal, QTimer
+from PyQt5.QtGui import QColor
+import math
+
 
 class AnimatedPixelButton(QPushButton):
     def __init__(self, row, col, button_size=30):
@@ -24,7 +29,11 @@ class AnimatedPixelButton(QPushButton):
         # Store original position and size
         self.original_geometry = None
         
-        # Setup animations
+        # Animation properties
+        self.highlight_progress = 0.0
+        self.processing_animation = False
+        
+        # Setup hover/click animations
         self.hover_animation = QPropertyAnimation(self, b"geometry")
         self.hover_animation.setDuration(150)
         self.hover_animation.setEasingCurve(QEasingCurve.OutCubic)
@@ -33,30 +42,21 @@ class AnimatedPixelButton(QPushButton):
         self.click_animation.setDuration(100)
         self.click_animation.setEasingCurve(QEasingCurve.OutCubic)
         
-        # Connect animation finished signals
-        self.hover_animation.finished.connect(self.onAnimationFinished)
-        self.click_animation.finished.connect(self.onAnimationFinished)
+        # Timer for processing animation
+        self.process_timer = QTimer(self)
+        self.process_timer.timeout.connect(self.updateProcessingAnimation)
+        self.process_timer.setInterval(5)
         
-        # Timer for color transition
-        self.color_timer = QTimer(self)
-        self.color_timer.timeout.connect(self.updateColorTransition)
-        self.color_timer.setInterval(16)  # 60 FPS
-        self.transition_progress = 0
-        self.start_color = QColor(255, 255, 255)
-        self.target_color = QColor(255, 255, 255)
-        
-        self.updateStyle()
         self.setMouseTracking(True)
+        self.updateStyle()
 
     def showEvent(self, event):
         super().showEvent(event)
-        # Store original geometry once the widget is shown
         if self.original_geometry is None:
             self.original_geometry = self.geometry()
 
     def enterEvent(self, event):
         self.is_hovered = True
-        # Scale up animation using original position
         if self.original_geometry is None:
             self.original_geometry = self.geometry()
             
@@ -68,36 +68,24 @@ class AnimatedPixelButton(QPushButton):
         self.hover_animation.setStartValue(self.geometry())
         self.hover_animation.setEndValue(new_geometry)
         self.hover_animation.start()
-        
-        self.startColorTransition()
+        self.updateStyle()
         super().enterEvent(event)
 
     def leaveEvent(self, event):
         self.is_hovered = False
-        # Scale down animation
-        current_geometry = self.geometry()
-        center = current_geometry.center()
-        new_geometry = QRect(0, 0, self.base_size, self.base_size)
-        new_geometry.moveCenter(center)
-        
-        self.hover_animation.setStartValue(current_geometry)
-        self.hover_animation.setEndValue(new_geometry)
+        self.hover_animation.setStartValue(self.geometry())
+        self.hover_animation.setEndValue(self.original_geometry)
         self.hover_animation.start()
-        
-        self.startColorTransition()
+        self.updateStyle()
         super().leaveEvent(event)
 
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
+            self.click_animation_active = True
             if self.original_geometry is None:
                 self.original_geometry = self.geometry()
-                
-            self.click_animation_active = True
-            # Stop any running animations
-            self.hover_animation.stop()
-            self.click_animation.stop()
             
-            # Scale down animation from original position
+            current_size = self.geometry().width()
             new_size = int(self.base_size * 0.9)
             new_geometry = QRect(self.original_geometry)
             new_geometry.setSize(QSize(new_size, new_size))
@@ -107,88 +95,82 @@ class AnimatedPixelButton(QPushButton):
             self.click_animation.setEndValue(new_geometry)
             self.click_animation.start()
             
-            self.startColorTransition()
+            self.updateStyle()
         super().mousePressEvent(event)
 
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.LeftButton:
-            if self.original_geometry is None:
-                self.original_geometry = self.geometry()
-                
             self.click_animation_active = False
-            # Stop any running animations
-            self.hover_animation.stop()
-            self.click_animation.stop()
-            
-            # Calculate target size based on hover state
-            target_size = int(self.base_size * (1.1 if self.is_hovered else 1.0))
-            
-            # Create target geometry based on original position
+            new_size = int(self.base_size * (1.1 if self.is_hovered else 1.0))
             new_geometry = QRect(self.original_geometry)
-            new_geometry.setSize(QSize(target_size, target_size))
+            new_geometry.setSize(QSize(new_size, new_size))
             new_geometry.moveCenter(self.original_geometry.center())
             
-            # Set up and start the animation
             self.click_animation.setStartValue(self.geometry())
             self.click_animation.setEndValue(new_geometry)
             self.click_animation.start()
-            
-            self.startColorTransition()
+            self.updateStyle()
         super().mouseReleaseEvent(event)
 
-    def onAnimationFinished(self):
-        # If not hovered or clicked, ensure we return to original position
-        if not self.is_hovered and not self.click_animation_active:
-            if self.geometry() != self.original_geometry:
-                self.setGeometry(self.original_geometry)
+    def startProcessingAnimation(self, target_state):
+        """Start the processing animation for morphological operations"""
+        self.processing_animation = True
+        self.target_state = target_state
+        self.highlight_progress = 0.0
+        self.process_timer.start()
 
-    def startColorTransition(self):
-        self.transition_progress = 0
-        self.start_color = self.getBackgroundColor()
-        self.target_color = self.calculateTargetColor()
-        self.color_timer.start()
+    def updateProcessingAnimation(self):
+        """Update the processing animation state"""
+        if self.processing_animation:
+            self.highlight_progress += 0.1
+            if self.highlight_progress >= 1.0:
+                self.highlight_progress = 0.0
+                self.processing_animation = False
+                self.state = self.target_state
+                self.process_timer.stop()
+            self.updateStyle()
 
-    def updateColorTransition(self):
-        self.transition_progress = min(1.0, self.transition_progress + 0.1)
-        current_color = self.interpolateColor(self.start_color, self.target_color, self.transition_progress)
-        self.updateStyle(current_color)
-        
-        if self.transition_progress >= 1.0:
-            self.color_timer.stop()
-
-    def interpolateColor(self, start_color, end_color, progress):
-        return QColor(
-            int(start_color.red() + (end_color.red() - start_color.red()) * progress),
-            int(start_color.green() + (end_color.green() - start_color.green()) * progress),
-            int(start_color.blue() + (end_color.blue() - start_color.blue()) * progress)
-        )
-
-    def calculateTargetColor(self):
-        base_intensity = 255 if not self.state else 0
-        
-        if self.click_animation_active:
-            return QColor(40, 60, 40) if self.state else QColor(220, 255, 220)
-        elif self.is_hovered:
-            return QColor(40, 40, 60) if self.state else QColor(220, 220, 255)
-        else:
-            return QColor(base_intensity, base_intensity, base_intensity)
-
-    def getBackgroundColor(self):
-        style = self.styleSheet()
-        if "background-color:" in style:
-            color_str = style.split("background-color:")[1].split(";")[0].strip()
-            return QColor(color_str)
-        return QColor(255, 255, 255)
-
-    def updateStyle(self, color=None):
-        if color is None:
-            color = self.calculateTargetColor()
+    def updateStyle(self):
+        # Base color calculation
+        if self.processing_animation:
+            # Calculate animation colors for processing
+            if self.target_state:  # Transitioning to black
+                r = g = b = int(255 * (1.0 - self.highlight_progress))
+                highlight = QColor(0, 100, 255)  # Blue highlight
+            else:  # Transitioning to white
+                r = g = b = int(255 * self.highlight_progress)
+                highlight = QColor(255, 100, 0)  # Orange highlight
             
+            # Blend with highlight color
+            blend_factor = abs(math.sin(self.highlight_progress * math.pi)) * 0.5
+            base_color = QColor(
+                int(r * (1 - blend_factor) + highlight.red() * blend_factor),
+                int(g * (1 - blend_factor) + highlight.green() * blend_factor),
+                int(b * (1 - blend_factor) + highlight.blue() * blend_factor)
+            )
+        else:
+            # Normal state coloring
+            base_intensity = 255 if not self.state else 0
+            if self.is_hovered:
+                if self.state:  # Dark state
+                    base_color = QColor(40, 40, 60)  # Dark blue-ish
+                else:  # Light state
+                    base_color = QColor(220, 220, 255)  # Light blue-ish
+            else:
+                base_color = QColor(base_intensity, base_intensity, base_intensity)
+            
+            if self.click_animation_active:
+                if self.state:
+                    base_color = QColor(40, 60, 40)  # Dark green-ish
+                else:
+                    base_color = QColor(220, 255, 220)  # Light green-ish
+        
+        # Border style
         border_style = "2px solid #666" if self.is_hovered else "1px solid gray"
         
         self.setStyleSheet(f"""
             QPushButton {{
-                background-color: {color.name()};
+                background-color: {base_color.name()};
                 border: {border_style};
                 border-radius: 2px;
             }}
@@ -501,16 +483,12 @@ class PatternLibraryWidget(QGroupBox):
         text_group = QGroupBox("Text Pattern")
         text_layout = QHBoxLayout()
 
-        # Add text input
         self.text_input = QLineEdit()
-        self.text_input.setMaxLength(1)  # Only one character at a time
-        self.text_input.returnPressed.connect(
-            self.onTextPatternSelected
-        )  # Add Enter key handler
+        self.text_input.setMaxLength(1)
+        self.text_input.returnPressed.connect(self.onTextPatternSelected)
         text_layout.addWidget(QLabel("Character:"))
         text_layout.addWidget(self.text_input)
 
-        # Add generate button
         generate_text_btn = QPushButton("Generate")
         generate_text_btn.clicked.connect(self.onTextPatternSelected)
         text_layout.addWidget(generate_text_btn)
@@ -530,22 +508,26 @@ class PatternLibraryWidget(QGroupBox):
         if char:
             pattern = self.text_generator.generate_pattern(char)
             self.patternSelected.emit(pattern)
-            # Signal the main window to update the result
             main_window = self.window()
             if main_window:
                 main_window.updateResult()
-            self.text_input.clear()  # Clear the input after generating
+            self.text_input.clear()
 
 
 class MorphologicalGUI(QMainWindow):
     def __init__(self):
         super().__init__()
+        # Animation state
+        self.animation_in_progress = False
+        self.animation_timer = QTimer(self)
+        self.animation_timer.timeout.connect(self.animateOperation)
+        self.animation_timer.setInterval(5)  # Default animation speed
+        self.current_row = 0
+        self.current_col = 0
         self.initUI()
 
     def initUI(self):
         self.setWindowTitle("Morphological Operations")
-
-        # Create main widget and layout
         main_widget = QWidget()
         self.setCentralWidget(main_widget)
         main_layout = QHBoxLayout()
@@ -553,23 +535,18 @@ class MorphologicalGUI(QMainWindow):
         # Left panel (input)
         left_panel = QWidget()
         left_layout = QVBoxLayout()
-
-        # Add input grid label and grid
         left_layout.addWidget(QLabel("Input Grid (Click to Toggle)"))
         self.left_grid = EnhancedGridWidget(rows=10, cols=10, editable=True)
         self.left_grid.gridChanged.connect(self.updateResult)
         left_layout.addWidget(self.left_grid)
-
-        # Add explanation widget
         self.explanation = OperationExplanationWidget()
         left_layout.addWidget(self.explanation)
-
         left_panel.setLayout(left_layout)
 
         # Middle panel (controls)
         middle_panel = QWidget()
         middle_layout = QVBoxLayout()
-
+        
         # Operation selector
         middle_layout.addWidget(QLabel("Operation:"))
         self.operation_combo = QComboBox()
@@ -578,10 +555,8 @@ class MorphologicalGUI(QMainWindow):
         middle_layout.addWidget(self.operation_combo)
 
         # Structuring element
-        middle_layout.addWidget(QLabel("Structuring Element (Click to Edit):"))
-        self.struct_element = EnhancedGridWidget(
-            rows=3, cols=3, editable=True, button_size=20
-        )
+        middle_layout.addWidget(QLabel("Structuring Element:"))
+        self.struct_element = EnhancedGridWidget(rows=3, cols=3, editable=True, button_size=20)
         self.struct_element.gridChanged.connect(self.updateResult)
         struct_grid = np.ones((3, 3))
         self.struct_element.setGrid(struct_grid)
@@ -591,7 +566,6 @@ class MorphologicalGUI(QMainWindow):
         self.pattern_library = PatternLibraryWidget()
         self.pattern_library.patternSelected.connect(self.left_grid.setGrid)
         middle_layout.addWidget(self.pattern_library)
-
         middle_panel.setLayout(middle_layout)
 
         # Right panel (result)
@@ -606,13 +580,10 @@ class MorphologicalGUI(QMainWindow):
         main_layout.addWidget(left_panel)
         main_layout.addWidget(middle_panel)
         main_layout.addWidget(right_panel)
-
         main_widget.setLayout(main_layout)
-        self.generateRandomGrid()
 
     def generateRandomGrid(self):
-        rows = cols = 10  # Fixed size
-        random_grid = np.random.choice([0, 1], size=(rows, cols), p=[0.7, 0.3])
+        random_grid = np.random.choice([0, 1], size=(10, 10), p=[0.7, 0.3])
         self.left_grid.setGrid(random_grid)
         self.updateResult()
 
@@ -621,14 +592,61 @@ class MorphologicalGUI(QMainWindow):
         self.updateResult()
 
     def updateResult(self):
-        input_grid = self.left_grid.getGrid()
-        structure = self.struct_element.getGrid()
-        operation = self.operation_combo.currentText()
+        if self.animation_in_progress:
+            return
+        
+        # Store current state for animation
+        self.input_grid = self.left_grid.getGrid()
+        self.structure = self.struct_element.getGrid()
+        self.operation = self.operation_combo.currentText()
+        
+        # Calculate final result for reference
+        self.final_result = self.applyOperation(
+            self.input_grid, self.structure, self.operation)
+        
+        # Initialize animation state
+        self.current_row = 0
+        self.current_col = 0
+        self.animation_in_progress = True
+        
+        # Start animation timer
+        self.animation_timer.start()
 
-        # Direct result without animation
-        result = self.applyOperation(input_grid, structure, operation)
-        self.right_grid.setGrid(result)
-        self.right_grid.update()  # Force UI refresh
+    def animateOperation(self):
+        if not self.animation_in_progress:
+            return
+
+        rows, cols = self.input_grid.shape
+        struct_rows, struct_cols = self.structure.shape
+        half_struct_row = struct_rows // 2
+        half_struct_col = struct_cols // 2
+        
+        # Calculate region affected by structuring element
+        row_start = max(0, self.current_row - half_struct_row)
+        row_end = min(rows, self.current_row + half_struct_row + 1)
+        col_start = max(0, self.current_col - half_struct_col)
+        col_end = min(cols, self.current_col + half_struct_col + 1)
+        
+        # Animate cells that will change
+        for i in range(row_start, row_end):
+            for j in range(col_start, col_end):
+                current_state = bool(self.input_grid[i, j])
+                final_state = bool(self.final_result[i, j])
+                if current_state != final_state:
+                    self.right_grid.buttons[i][j].startProcessingAnimation(final_state)
+        
+        # Move to next position
+        self.current_col += 1
+        if self.current_col >= cols:
+            self.current_col = 0
+            self.current_row += 1
+            
+        # Check if animation is complete
+        if self.current_row >= rows:
+            self.animation_in_progress = False
+            self.animation_timer.stop()
+            # Update any remaining cells to their final state
+            self.right_grid.setGrid(self.final_result)
 
     def applyOperation(self, input_grid, structure, operation):
         if operation == "Erosion":
@@ -639,7 +657,7 @@ class MorphologicalGUI(QMainWindow):
             return ndimage.binary_opening(input_grid, structure=structure)
         elif operation == "Closing":
             return ndimage.binary_closing(input_grid, structure=structure)
-
+    
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)

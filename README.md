@@ -1,5 +1,7 @@
 # MorphoLogic
 
+![MorphoLogic](assets/animation.gif)]
+
 Learn about common morphological operations in image processing:
 - Erosion
 - Dilation
@@ -7,7 +9,6 @@ Learn about common morphological operations in image processing:
 - Closing
 
 Generate a binary image of a letter or number and apply the morphological operations to it.
-
 ## Installation
 
 ```bash
