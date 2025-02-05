@@ -8,7 +8,6 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt, pyqtSignal, QTimer, QPropertyAnimation, QEasingCurve, QRect
 from PyQt5.QtGui import QColor
 from PyQt5.QtCore import QSize
-from PyQt5.QtWidgets import QSpinBox
 from scipy import ndimage
 from PyQt5.QtCore import Qt, pyqtSignal, QTimer
 from PyQt5.QtGui import QColor
